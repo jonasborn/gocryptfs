@@ -3,7 +3,6 @@
 package tlog
 
 import (
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -168,38 +167,7 @@ func SwitchLoggerToSyslog() {
 	}
 }
 
-// PrintMasterkeyReminder reminds the user that he should store the master key in
-// a safe place.
+// PrintMasterkeyReminder disabled - external key server manages keys.
 func PrintMasterkeyReminder(key []byte) {
-	if !Info.Enabled {
-		// Quiet mode
-		return
-	}
-	if !term.IsTerminal(int(os.Stdout.Fd())) {
-		// We don't want the master key to end up in a log file
-		Info.Printf("Not running on a terminal, suppressing master key display\n")
-		return
-	}
-	h := hex.EncodeToString(key)
-	var hChunked string
-	// Try to make it less scary by splitting it up in chunks
-	for i := 0; i < len(h); i += 8 {
-		hChunked += h[i : i+8]
-		if i < 52 {
-			hChunked += "-"
-		}
-		if i == 24 {
-			hChunked += "\n    "
-		}
-	}
-	Info.Printf(`
-Your master key is:
-
-    %s
-
-If the gocryptfs.conf file becomes corrupted or you ever forget your password,
-there is only one hope for recovery: The master key. Print it to a piece of
-paper and store it in a drawer. This message is only printed once.
-
-`, ColorGrey+hChunked+ColorReset)
+	return
 }

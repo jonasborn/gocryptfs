@@ -59,6 +59,9 @@ var BackendXChaCha20Poly1305 = AEADTypeEnum{"XChaCha20-Poly1305", "Go", chacha20
 // BackendXChaCha20Poly1305OpenSSL specifies XChaCha20-Poly1305-OpenSSL.
 var BackendXChaCha20Poly1305OpenSSL = AEADTypeEnum{"XChaCha20-Poly1305", "OpenSSL", chacha20poly1305.NonceSizeX}
 
+// BackendExternal specifies an external HTTP/HTTPS encryption provider backend.
+var BackendExternal = AEADTypeEnum{"AES-GCM-256", "External", 16}
+
 // CryptoCore is the low level crypto implementation.
 type CryptoCore struct {
 	// EME is used for filename encryption.
@@ -82,7 +85,12 @@ type CryptoCore struct {
 // Note: "key" is either the scrypt hash of the password (when decrypting
 // a config file) or the masterkey (when finally mounting the filesystem).
 func New(key []byte, aeadType AEADTypeEnum, IVBitLen int, useHKDF bool) *CryptoCore {
-	tlog.Debug.Printf("cryptocore.New: key=%d bytes, aeadType=%v, IVBitLen=%d, useHKDF=%v",
+	return NewWithAEAD(key, aeadType, IVBitLen, useHKDF, nil)
+}
+
+// NewWithAEAD allows initializing CryptoCore with a custom cipher.AEAD (e.g. for BackendExternal).
+func NewWithAEAD(key []byte, aeadType AEADTypeEnum, IVBitLen int, useHKDF bool, customAEAD cipher.AEAD) *CryptoCore {
+	tlog.Debug.Printf("cryptocore.NewWithAEAD: key=%d bytes, aeadType=%v, IVBitLen=%d, useHKDF=%v",
 		len(key), aeadType, IVBitLen, useHKDF)
 
 	if len(key) != KeyLen {
@@ -92,10 +100,14 @@ func New(key []byte, aeadType AEADTypeEnum, IVBitLen int, useHKDF bool) *CryptoC
 		log.Panicf("Unsupported IV length of %d bits", IVBitLen)
 	}
 
-	// Initialize EME for filename encryption.
+	// Initialize EME for filename encryption. Skipped for the External
+	// backend: its filenames are keyed per-directory by the external
+	// provider (see externalenc.ExternalEME), not by a filesystem-wide key
+	// derived from "key" here, so deriving one would just be unused dead
+	// key material.
 	var emeCipher *eme.EMECipher
 	var err error
-	{
+	if customAEAD == nil {
 		var emeBlockCipher cipher.Block
 		if useHKDF {
 			emeKey := hkdfDerive(key, hkdfInfoEMENames, KeyLen)
@@ -114,7 +126,9 @@ func New(key []byte, aeadType AEADTypeEnum, IVBitLen int, useHKDF bool) *CryptoC
 
 	// Initialize an AEAD cipher for file content encryption.
 	var aeadCipher cipher.AEAD
-	if aeadType == BackendOpenSSL || aeadType == BackendGoGCM {
+	if customAEAD != nil {
+		aeadCipher = customAEAD
+	} else if aeadType == BackendOpenSSL || aeadType == BackendGoGCM {
 		var gcmKey []byte
 		if useHKDF {
 			gcmKey = hkdfDerive(key, hkdfInfoGCMContent, KeyLen)
@@ -211,12 +225,8 @@ type wiper interface {
 // This is not bulletproof due to possible GC copies, but
 // still raises to bar for extracting the key.
 func (c *CryptoCore) Wipe() {
-	be := c.AEADBackend
-	if be == BackendOpenSSL || be == BackendAESSIV {
-		tlog.Debug.Printf("CryptoCore.Wipe: Wiping AEADBackend %q key", be)
-		// We don't use "x, ok :=" because we *want* to crash loudly if the
-		// type assertion fails.
-		w := c.AEADCipher.(wiper)
+	if w, ok := c.AEADCipher.(wiper); ok {
+		tlog.Debug.Printf("CryptoCore.Wipe: Wiping AEADBackend key")
 		w.Wipe()
 	} else {
 		tlog.Debug.Printf("CryptoCore.Wipe: Only nil'ing stdlib refs")

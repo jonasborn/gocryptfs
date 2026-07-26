@@ -52,6 +52,21 @@ func handleArgsMasterkey(args *argContainer) (masterkey []byte) {
 	}
 	// "-zerokey"
 	if args.zerokey {
+		// In External-provider mode (see mount.go's doMount), this all-zero
+		// key is never actually used for anything: it's purged from memory
+		// immediately after cryptoBackend is switched to BackendExternal, and
+		// every content block / directory filename key instead comes live
+		// from the external key server (externalenc.NewExternalAEAD/EME).
+		// The generic "PROVIDES NO SECURITY AT ALL" warning below is correct
+		// for gocryptfs's normal standalone -zerokey use (a real testing-only
+		// mode with no other key source), but false and alarming here — it
+		// reads as "this mount has no encryption," when the actual security
+		// boundary is the external provider, not this placeholder.
+		if args.external_provider != "" {
+			tlog.Info.Println("External-provider mode: local master key unlock skipped " +
+				"(content and filename keys are fetched from the external key server).")
+			return make([]byte, cryptocore.KeyLen)
+		}
 		tlog.Info.Println("Using all-zero dummy master key.")
 		tlog.Info.Println(tlog.ColorYellow +
 			"ZEROKEY MODE PROVIDES NO SECURITY AT ALL AND SHOULD ONLY BE USED FOR TESTING." +

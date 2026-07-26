@@ -26,6 +26,7 @@ import (
 	"github.com/rfjakob/gocryptfs/v2/internal/cryptocore"
 	"github.com/rfjakob/gocryptfs/v2/internal/ctlsocksrv"
 	"github.com/rfjakob/gocryptfs/v2/internal/exitcodes"
+	"github.com/rfjakob/gocryptfs/v2/internal/externalenc"
 	"github.com/rfjakob/gocryptfs/v2/internal/fusefrontend"
 	"github.com/rfjakob/gocryptfs/v2/internal/fusefrontend_reverse"
 	"github.com/rfjakob/gocryptfs/v2/internal/nametransform"
@@ -328,12 +329,42 @@ func initFuseFrontend(args *argContainer) (rootNode fs.InodeEmbedder, wipeKeys f
 	}
 
 	// Init crypto backend
-	cCore := cryptocore.New(masterkey, cryptoBackend, IVBits, args.hkdf)
+	var cCore *cryptocore.CryptoCore
+	if args.external_provider == "" {
+		tlog.Fatal.Printf("Error: Standalone mode disabled. An external key server endpoint (-external-provider URL) is strictly required.")
+		os.Exit(exitcodes.Usage)
+	}
+	cryptoBackend = cryptocore.BackendExternal
+	symKeyStr := args.symmetric_key
+	var symKeySalt []byte
+	if symKeyStr == "" && args.symmetric_key_from_config {
+		// Never accept the secret itself on the command line — it's looked up
+		// (along with its persisted derivation salt) in 115fs's own config
+		// file instead. See symkey_config.go.
+		resolved, salt, resolveErr := resolveSymmetricKeyFromConfig()
+		if resolveErr != nil {
+			tlog.Fatal.Printf("Failed to resolve -symmetric-key-from-config: %v", resolveErr)
+			os.Exit(exitcodes.CipherDir)
+		}
+		symKeyStr = resolved
+		symKeySalt = salt
+	}
+	client, err := externalenc.NewClient(args.external_provider, args.key_name, symKeyStr, args.cert_hash, args.less_secure_provider, symKeySalt)
+	if err != nil {
+		tlog.Fatal.Printf("Failed to initialize external encryption provider: %v", err)
+		os.Exit(exitcodes.CipherDir)
+	}
+	extAEAD := externalenc.NewExternalAEAD(client)
+	cCore = cryptocore.NewWithAEAD(masterkey, cryptoBackend, IVBits, args.hkdf, extAEAD)
 	cEnc := contentenc.New(cCore, contentenc.DefaultBS)
-	nameTransform := nametransform.New(cCore.EMECipher, frontendArgs.LongNames, args.longnamemax,
+	// Filenames get the same external-provider dependency as content: a key
+	// fetched per directory from the key server (see externalenc.GetNameEME),
+	// not a filesystem-wide key derived from anything stored or unlocked
+	// locally. There is no master key anywhere in the External backend.
+	nameTransform := nametransform.New(externalenc.NewExternalEME(client), frontendArgs.LongNames, args.longnamemax,
 		args.raw64, []string(args.badname), frontendArgs.DeterministicNames)
-	// After the crypto backend is initialized,
-	// we can purge the master key from memory.
+	// masterkey is an unused -zerokey placeholder in External mode (see
+	// below) — purge it immediately rather than let it sit around.
 	for i := range masterkey {
 		masterkey[i] = 0
 	}

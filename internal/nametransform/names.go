@@ -23,9 +23,34 @@ const (
 	NameMax = 255
 )
 
+// EMEProvider supplies the EME cipher to use for a given directory,
+// identified by that directory's IV (or, for xattrs, the fixed xattrNameIV).
+// A provider may return the same cipher for every directory (the traditional
+// single filesystem-wide filename key, see NewStatic) or a different one per
+// directory — nametransform does not care which.
+type EMEProvider interface {
+	Get(dirIV []byte) (*eme.EMECipher, error)
+}
+
+// staticEME implements EMEProvider by always returning the same cipher,
+// ignoring dirIV. This is the traditional single-master-key behavior.
+type staticEME struct {
+	c *eme.EMECipher
+}
+
+func (s staticEME) Get(dirIV []byte) (*eme.EMECipher, error) {
+	return s.c, nil
+}
+
+// NewStatic wraps a single, fixed EME cipher as an EMEProvider, for callers
+// that use one filesystem-wide filename key rather than a per-directory one.
+func NewStatic(c *eme.EMECipher) EMEProvider {
+	return staticEME{c: c}
+}
+
 // NameTransform is used to transform filenames.
 type NameTransform struct {
-	emeCipher *eme.EMECipher
+	emeProvider EMEProvider
 	// Names longer than `longNameMax` are hashed. Set to MaxInt when
 	// longnames are disabled.
 	longNameMax int
@@ -48,7 +73,7 @@ type NameTransform struct {
 // If `longNames` is set, names longer than `longNameMax` are hashed to
 // `gocryptfs.longname.[sha256]`.
 // Pass `longNameMax = 0` to use the default value (255).
-func New(e *eme.EMECipher, longNames bool, longNameMax uint8, raw64 bool, badname []string, deterministicNames bool) *NameTransform {
+func New(e EMEProvider, longNames bool, longNameMax uint8, raw64 bool, badname []string, deterministicNames bool) *NameTransform {
 	tlog.Debug.Printf("nametransform.New: longNameMax=%v, raw64=%v, badname=%q",
 		longNameMax, raw64, badname)
 	b64 := base64.URLEncoding
@@ -69,7 +94,7 @@ func New(e *eme.EMECipher, longNames bool, longNameMax uint8, raw64 bool, badnam
 		tlog.Info.Printf("Running on MacOS, enabling Unicode normalization")
 	}
 	return &NameTransform{
-		emeCipher:          e,
+		emeProvider:        e,
 		longNameMax:        effectiveLongNameMax,
 		B64:                b64,
 		badnamePatterns:    badname,
@@ -122,7 +147,12 @@ func (n *NameTransform) decryptName(cipherName string, iv []byte) (string, error
 		tlog.Debug.Printf("decryptName %q: decoded length %d is not a multiple of 16", cipherName, len(bin))
 		return "", syscall.EBADMSG
 	}
-	bin = n.emeCipher.Decrypt(iv, bin)
+	cipher, err := n.emeProvider.Get(iv)
+	if err != nil {
+		tlog.Warn.Printf("decryptName %q: could not get EME cipher: %v", cipherName, err)
+		return "", syscall.EIO
+	}
+	bin = cipher.Decrypt(iv, bin)
 	bin, err = unPad16(bin)
 	if err != nil {
 		tlog.Warn.Printf("decryptName %q: unPad16 error: %v", cipherName, err)
@@ -155,19 +185,24 @@ func (n *NameTransform) EncryptName(plainName string, iv []byte) (cipherName64 s
 		//    GUI and CLI on MacOS.
 		plainName = norm.NFC.String(plainName)
 	}
-	return n.encryptName(plainName, iv), nil
+	return n.encryptName(plainName, iv)
 }
 
 // encryptName encrypts "plainName" and returns a base64-encoded "cipherName64",
 // encrypted using EME (https://github.com/rfjakob/eme).
 //
 // No checks for null bytes etc are performed against plainName.
-func (n *NameTransform) encryptName(plainName string, iv []byte) (cipherName64 string) {
+func (n *NameTransform) encryptName(plainName string, iv []byte) (cipherName64 string, err error) {
+	cipher, err := n.emeProvider.Get(iv)
+	if err != nil {
+		tlog.Warn.Printf("encryptName: could not get EME cipher: %v", err)
+		return "", syscall.EIO
+	}
 	bin := []byte(plainName)
 	bin = pad16(bin)
-	bin = n.emeCipher.Encrypt(iv, bin)
+	bin = cipher.Encrypt(iv, bin)
 	cipherName64 = n.B64.EncodeToString(bin)
-	return cipherName64
+	return cipherName64, nil
 }
 
 // EncryptAndHashName encrypts "name" and hashes it to a longname if it is

@@ -36,7 +36,7 @@ func TestRemoveLongNameSuffix(t *testing.T) {
 func newLognamesTestInstance(longNameMax uint8) *NameTransform {
 	key := make([]byte, cryptocore.KeyLen)
 	cCore := cryptocore.New(key, cryptocore.BackendGoGCM, contentenc.DefaultIVBits, true)
-	return New(cCore.EMECipher, true, longNameMax, true, nil, false)
+	return New(NewStatic(cCore.EMECipher), true, longNameMax, true, nil, false)
 }
 
 func TestLongNameMax(t *testing.T) {

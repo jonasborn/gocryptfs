@@ -30,7 +30,7 @@ func (n *NameTransform) EncryptXattrName(plainName string) (cipherName64 string,
 		tlog.Warn.Printf("EncryptXattrName %q: invalid plainName: %v", plainName, err)
 		return "", syscall.EBADMSG
 	}
-	return n.encryptName(plainName, xattrNameIV), nil
+	return n.encryptName(plainName, xattrNameIV)
 }
 
 // DecryptXattrName calls decryptName to try and decrypt a base64-encoded encrypted
