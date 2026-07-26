@@ -1,3 +1,8 @@
+> [!WARNING]
+> **This is a fork of the upstream [rfjakob/gocryptfs](https://github.com/rfjakob/gocryptfs) adding an experimental "External Encryption Provider" backend (`internal/externalenc`, `pinning`, `symkey_config.go`) for [115fs](https://github.com/jonasborn/115fs).**
+> This backend is new, unreviewed, unaudited code that fetches per-block content keys and per-directory filename keys from an external HTTPS key server instead of using a local master key. It has **not** gone through any external security review and is **not** covered by upstream gocryptfs's 2017 audit ([defuse.ca](https://defuse.ca/audits/gocryptfs.htm)), which only applies to the unmodified upstream code.
+> **Do not use this fork, or its External Encryption Provider mode, in production or with data you cannot afford to lose.** For general-purpose encrypted filesystem use, use upstream gocryptfs instead.
+
 [![gocryptfs](Documentation/gocryptfs-logo.png)](https://nuetzlich.net/gocryptfs/)
 [![CI](https://github.com/rfjakob/gocryptfs/actions/workflows/ci.yml/badge.svg)](https://github.com/rfjakob/gocryptfs/actions/workflows/ci.yml)
 [![MIT License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
