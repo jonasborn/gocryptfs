@@ -36,9 +36,9 @@ type argContainer struct {
 	dev, nodev, suid, nosuid, exec, noexec, rw, ro, kernel_cache, acl bool
 	masterkey, mountpoint, cipherdir, cpuprofile,
 	memprofile, ko, ctlsock, fsname, force_owner, trace, context string
-	// External Encryption Provider
-	external_provider, key_name, symmetric_key, cert_hash, less_secure_provider string
-	symmetric_key_from_config                                                   bool
+	// External Encryption Provider (CON-3 Card Envelope tunnel via KS relay)
+	external_provider, key_id, cert_hash string
+	fs_identity_from_config              bool
 	// FIDO2
 	fido2                string
 	fido2_assert_options []string
@@ -216,12 +216,10 @@ func parseCliOpts(osArgs []string) (args argContainer) {
 	flagSet.StringVar(&args.trace, "trace", "", "Write execution trace to file")
 	flagSet.StringVar(&args.fido2, "fido2", "", "Protect the masterkey using a FIDO2 token instead of a password")
 	flagSet.StringVar(&args.context, "context", "", "Set SELinux context (see mount(8) for details)")
-	flagSet.StringVar(&args.external_provider, "external-provider", "", "Use external HTTPS encryption provider URL (e.g. https://192.168.2.223:9443)")
-	flagSet.StringVar(&args.less_secure_provider, "less-secure-provider", "", "HTTP-only bootstrap listener base URL for the external provider (e.g. http://192.168.2.223:9080), used only for pre-trust diagnostics (TLS trust issue reports, startup/heartbeat pings). Defaults to the external provider's host on port 9080 if unset.")
-	flagSet.StringVar(&args.key_name, "key-name", "default", "Key name for external encryption provider")
-	flagSet.StringVar(&args.symmetric_key, "symmetric-key", "", "Symmetric payload key for external encryption provider, given directly. Only for manual/standalone use — a raw 32-byte base64 key, since there is no salt to derive one from a passphrase here. Prefer -symmetric-key-from-config, which never puts the secret itself on the command line.")
-	flagSet.BoolVar(&args.symmetric_key_from_config, "symmetric-key-from-config", false, "Resolve the symmetric payload key from 115fs's own config file (~/.config/115fs/config.json) instead of passing the secret itself on the command line")
-	flagSet.StringVar(&args.cert_hash, "tls-hash", "", "SHA256 fingerprint of the external encryption provider's TLS certificate. Verified against the live connection once; on match no interactive prompt is shown. There is no flag to disable verification outright.")
+	flagSet.StringVar(&args.external_provider, "external-provider", "", "Keyserver (115ks) HTTPS base URL for the Card Envelope tunnel (e.g. https://192.168.2.223:9443)")
+	flagSet.StringVar(&args.key_id, "key-id", "", "One-byte card key id (two hex digits, e.g. 52) selecting which card-side key DERIVE_BLOCK_KEY(S) uses for this mount")
+	flagSet.BoolVar(&args.fs_identity_from_config, "fs-identity-from-config", false, "Resolve the FS transport identity (transportClientId/Key) and card identity (cardClientId/Secret/cardInstanceId) from 115fs's own config file (~/.config/115fs/config.json) instead of passing any secret on the command line")
+	flagSet.StringVar(&args.cert_hash, "tls-hash", "", "SHA256 fingerprint of the keyserver's TLS certificate. Verified against the live connection once; on match no interactive prompt is shown. There is no flag to disable verification outright.")
 	flagSet.StringArrayVar(&args.fido2_assert_options, "fido2-assert-option", nil, "Options to be passed with `fido2-assert -t`")
 
 	// Exclusion options

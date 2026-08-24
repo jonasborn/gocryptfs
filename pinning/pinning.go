@@ -116,10 +116,7 @@ func PromptFingerprint() string {
 
 // DrunkenBishop generates an OpenSSH-style ASCII-art random-walk visualization
 // of a fingerprint, using digits only (0-9) instead of the usual mixed
-// character set, so it renders identically everywhere. The algorithm mirrors
-// db.js, which independently reimplements this same visualization in
-// JavaScript for a browser-side Web UI — that duplication is intentional
-// (different language/runtime), unlike the Go copies this package replaces.
+// character set, so it renders identically everywhere.
 func DrunkenBishop(data []byte, title string) string {
 	const width = 17
 	const height = 9

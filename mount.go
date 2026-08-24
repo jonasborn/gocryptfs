@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/hex"
 	"log"
 	"log/syslog"
 	"math"
@@ -331,25 +332,41 @@ func initFuseFrontend(args *argContainer) (rootNode fs.InodeEmbedder, wipeKeys f
 	// Init crypto backend
 	var cCore *cryptocore.CryptoCore
 	if args.external_provider == "" {
-		tlog.Fatal.Printf("Error: Standalone mode disabled. An external key server endpoint (-external-provider URL) is strictly required.")
+		tlog.Fatal.Printf("Error: Standalone mode disabled. A keyserver endpoint (-external-provider URL) is strictly required.")
+		os.Exit(exitcodes.Usage)
+	}
+	if !args.fs_identity_from_config {
+		tlog.Fatal.Printf("Error: -fs-identity-from-config is strictly required. There is no way to pass the FS transport/card secrets directly on the command line.")
+		os.Exit(exitcodes.Usage)
+	}
+	if args.key_id == "" {
+		tlog.Fatal.Printf("Error: -key-id (one-byte card key id, two hex digits) is strictly required.")
+		os.Exit(exitcodes.Usage)
+	}
+	keyIDBytes, keyIDErr := hex.DecodeString(args.key_id)
+	if keyIDErr != nil || len(keyIDBytes) != 1 {
+		tlog.Fatal.Printf("Error: -key-id must be exactly one byte as two hex digits (e.g. 52), got %q", args.key_id)
 		os.Exit(exitcodes.Usage)
 	}
 	cryptoBackend = cryptocore.BackendExternal
-	symKeyStr := args.symmetric_key
-	var symKeySalt []byte
-	if symKeyStr == "" && args.symmetric_key_from_config {
-		// Never accept the secret itself on the command line — it's looked up
-		// (along with its persisted derivation salt) in 115fs's own config
-		// file instead. See symkey_config.go.
-		resolved, salt, resolveErr := resolveSymmetricKeyFromConfig()
-		if resolveErr != nil {
-			tlog.Fatal.Printf("Failed to resolve -symmetric-key-from-config: %v", resolveErr)
-			os.Exit(exitcodes.CipherDir)
-		}
-		symKeyStr = resolved
-		symKeySalt = salt
+	// Never accept the transport/card secrets on the command line — they're
+	// looked up in 115fs's own config file instead. See symkey_config.go.
+	identity, identityErr := resolveFsIdentityFromConfig()
+	if identityErr != nil {
+		tlog.Fatal.Printf("Failed to resolve -fs-identity-from-config: %v", identityErr)
+		os.Exit(exitcodes.CipherDir)
 	}
-	client, err := externalenc.NewClient(args.external_provider, args.key_name, symKeyStr, args.cert_hash, args.less_secure_provider, symKeySalt)
+	client, err := externalenc.NewClient(externalenc.Options{
+		BaseURL:            args.external_provider,
+		CertFingerprint:    args.cert_hash,
+		KeyID:              keyIDBytes[0],
+		UsagePrefix:        []byte(args.cipherdir),
+		TransportClientID:  identity.TransportClientID,
+		TransportClientKey: identity.TransportClientKey,
+		CardInstanceID:     identity.CardInstanceID,
+		CardClientID:       identity.CardClientID,
+		CardClientSecret:   identity.CardClientSecret,
+	})
 	if err != nil {
 		tlog.Fatal.Printf("Failed to initialize external encryption provider: %v", err)
 		os.Exit(exitcodes.CipherDir)
