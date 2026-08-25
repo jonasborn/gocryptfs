@@ -464,19 +464,20 @@ func OpenCEResponse(session *CardSession, request *CardRequest, responseApduBase
 }
 
 // toCommandAPDU frames a CE frame as an INS_PROTECTED (0x8A) command APDU,
-// short form (Lc/Le single byte) when the frame fits in 255 bytes, extended
-// form otherwise (CardEnvelopeApduCodec.toCommandApdu()).
+// always in extended form for both Lc and Le (CardEnvelopeApduCodec.toCommandApdu()).
+//
+// Both fields are always extended, even when the frame would fit a short-form
+// Lc: ISO 7816-4 case 4 has no valid encoding pairing a short-form Lc with an
+// extended-form Le in one APDU, and Le must always be extended here (see
+// below), so Lc has to be extended too for the APDU to parse unambiguously.
+// Le is always present and always extended (0x00 0x00, Ne=65536) because this
+// is genuinely a case 4 command: the card always sends a response frame back
+// for INS_PROTECTED, and a short-form Le=0x00 (Ne=256) capped that response
+// at 256 bytes -- which the CE response frame (header + 7 length-prefixed
+// fields incl. ciphertext and a 32-byte MAC) routinely exceeds.
 func toCommandAPDU(frame []byte) ([]byte, error) {
-	if len(frame) <= 255 {
-		apdu := make([]byte, 5+len(frame)+1)
-		apdu[0] = 0x80
-		apdu[1] = insProtected
-		apdu[2] = 0x00
-		apdu[3] = 0x00
-		apdu[4] = byte(len(frame))
-		copy(apdu[5:], frame)
-		apdu[len(apdu)-1] = 0x00
-		return apdu, nil
+	if len(frame) == 0 {
+		return nil, fmt.Errorf("proto: CE frame must not be empty")
 	}
 	if len(frame) > 0xFFFF {
 		return nil, fmt.Errorf("proto: CE frame too large for extended APDU (%d bytes)", len(frame))
@@ -489,6 +490,8 @@ func toCommandAPDU(frame []byte) ([]byte, error) {
 	apdu[4] = 0x00
 	binary.BigEndian.PutUint16(apdu[5:7], uint16(len(frame)))
 	copy(apdu[7:], frame)
+	// Trailing 2 bytes are the extended Le (0x00 0x00, Ne=65536) -- left as
+	// Go's zero value, matching make()'s zero-initialized backing array.
 	return apdu, nil
 }
 

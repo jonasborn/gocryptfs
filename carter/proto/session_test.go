@@ -90,9 +90,9 @@ func TestSessionRoundTrip(t *testing.T) {
 	if reqApduBytes[0] != 0x80 || reqApduBytes[1] != insProtected {
 		t.Fatalf("unexpected request APDU header: %x", reqApduBytes[:4])
 	}
-	// Short-form command APDU: 80 8A 00 00 <Lc> <frame> <Le>.
-	lc := int(reqApduBytes[4])
-	frameBytes := reqApduBytes[5 : 5+lc]
+	// Always-extended command APDU: 80 8A 00 00 00 <LcHi> <LcLo> <frame> <Le=00 00>.
+	lc := int(reqApduBytes[5])<<8 | int(reqApduBytes[6])
+	frameBytes := reqApduBytes[7 : 7+lc]
 	reqFrame, err := decodeCEFrame(frameBytes)
 	if err != nil {
 		t.Fatalf("card: decoding request frame: %v", err)
