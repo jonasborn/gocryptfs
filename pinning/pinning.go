@@ -114,6 +114,35 @@ func PromptFingerprint() string {
 	return strings.TrimSpace(input)
 }
 
+// PromptFingerprintConfirmed reads an operator-entered certificate fingerprint twice and
+// requires both entries to be non-empty and identical before returning it -- a lightweight
+// out-of-band check that the operator actually transcribed the fingerprint from wherever they
+// obtained it (the key server's admin console, an ops runbook, etc.) rather than reflexively
+// accepting whatever this process happens to be connected to right now, which is exactly what
+// a MITM sitting on the connection would want. Returns "" if the two entries don't match.
+func PromptFingerprintConfirmed() string {
+	first := PromptFingerprint()
+	if first == "" {
+		return ""
+	}
+	fmt.Printf("Confirm — enter it again: ")
+	var second string
+	if tty, err := os.Open("/dev/tty"); err == nil {
+		reader := bufio.NewReader(tty)
+		second, _ = reader.ReadString('\n')
+		tty.Close()
+	} else {
+		reader := bufio.NewReader(os.Stdin)
+		second, _ = reader.ReadString('\n')
+	}
+	second = strings.TrimSpace(second)
+	if second == "" || !strings.EqualFold(first, second) {
+		fmt.Println("Fingerprint entries did not match.")
+		return ""
+	}
+	return first
+}
+
 // DrunkenBishop generates an OpenSSH-style ASCII-art random-walk visualization
 // of a fingerprint, using digits only (0-9) instead of the usual mixed
 // character set, so it renders identically everywhere.
