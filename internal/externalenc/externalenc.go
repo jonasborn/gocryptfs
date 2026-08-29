@@ -17,6 +17,7 @@ import (
 
 	"github.com/rfjakob/eme"
 
+	"github.com/rfjakob/gocryptfs/v2/carter/blobmeta"
 	"github.com/rfjakob/gocryptfs/v2/carter/cardclient"
 	"github.com/rfjakob/gocryptfs/v2/carter/ksclient"
 	"github.com/rfjakob/gocryptfs/v2/carter/proto"
@@ -333,6 +334,11 @@ type Client struct {
 	nameCache *smartEMECache
 	mu        sync.RWMutex
 
+	// indexKey caches K_index (CON-3.1) for the life of the card session:
+	// the key behind BlobID and MetaKeyIndex. Cleared by clearCacheLocked
+	// whenever the session is torn down.
+	indexKey []byte
+
 	lastServerCert  []byte
 	lastCertHashHex string
 
@@ -520,6 +526,10 @@ func (c *Client) clearCacheLocked() {
 	if c.nameCache != nil {
 		c.nameCache.purge()
 	}
+	for i := range c.indexKey {
+		c.indexKey[i] = 0
+	}
+	c.indexKey = nil
 }
 
 func (c *Client) GetBlockAEAD(blockIndex uint64) (cipher.AEAD, error) {
@@ -705,6 +715,83 @@ func (c *Client) GetBlockKey(blockIndex uint64) ([]byte, error) {
 	}
 	_ = aead
 	return nil, fmt.Errorf("key not found in cache")
+}
+
+// deriveKeyCached fetches a single 32-byte key for an arbitrary card block
+// index (used for the CON-3.1 reserved / per-file metadata indices, which
+// live far above the content-block range). It reuses the content-key LRU
+// cache so repeat lookups for the same index are free, and never prefetches
+// a batch.
+func (c *Client) deriveKeyCached(index uint64) ([]byte, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if _, key, ok := c.cache.get(index); ok {
+		return key, nil
+	}
+	if c.session == nil {
+		if err := c.establishSession(); err != nil {
+			return nil, fmt.Errorf("externalenc: establishing FS card session: %w", err)
+		}
+	}
+	keys, err := c.waitForKeys(index, 1)
+	if err != nil {
+		return nil, err
+	}
+	k, ok := keys[index]
+	if !ok {
+		return nil, fmt.Errorf("externalenc: card returned no key for index %#016x", index)
+	}
+	out := append([]byte(nil), k...)
+	if _, putErr := c.cache.put(index, k); putErr != nil {
+		// AES key that will not build a cipher — surface it rather than
+		// silently returning an unusable key.
+		return nil, putErr
+	}
+	for i := range k {
+		k[i] = 0
+	}
+	return out, nil
+}
+
+// IndexKey returns K_index (CON-3.1): the card-derived key behind the blob
+// id (HMAC) and the per-file metadata key index. Stable for the life of the
+// card session; cached on the client.
+func (c *Client) IndexKey() ([]byte, error) {
+	c.mu.RLock()
+	if c.indexKey != nil {
+		k := append([]byte(nil), c.indexKey...)
+		c.mu.RUnlock()
+		return k, nil
+	}
+	c.mu.RUnlock()
+
+	k, err := c.deriveKeyCached(blobmeta.IdxBlobIDKey)
+	if err != nil {
+		return nil, err
+	}
+	c.mu.Lock()
+	if c.indexKey == nil {
+		c.indexKey = append([]byte(nil), k...)
+	}
+	c.mu.Unlock()
+	return k, nil
+}
+
+// MetaKey returns K_meta for a file UUID: the AEAD key that seals that
+// file's info-chunk (CON-3.1).
+func (c *Client) MetaKey(uuid [16]byte) ([]byte, error) {
+	ik, err := c.IndexKey()
+	if err != nil {
+		return nil, err
+	}
+	return c.deriveKeyCached(blobmeta.MetaKeyIndex(ik, uuid))
+}
+
+// IndexCacheKey returns K_idx: the card-derived key that seals
+// cipher_dir/idx/tree (CON-3.1).
+func (c *Client) IndexCacheKey() ([]byte, error) {
+	return c.deriveKeyCached(blobmeta.IdxIndexCacheKey)
 }
 
 // Round-trip instrumentation for DERIVE_BLOCK_KEY(S), opt-in via
