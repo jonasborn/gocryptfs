@@ -15,11 +15,16 @@ package ksclient
 
 import (
 	"bytes"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/rfjakob/gocryptfs/v2/carter/proto"
 )
@@ -81,15 +86,23 @@ type errorResponse struct {
 }
 
 // OpenTransportSession registers a transport session for transportClientID
-// via POST /api/v1/fs/transport-sessions. The body is plaintext JSON —
-// cryptographic proof of the transport key is only exercised later, on the
-// card-relay path.
-func (c *Client) OpenTransportSession(transportClientID string) (*TransportSessionResponse, error) {
+// via POST /api/v1/fs/transport-sessions. The body is plaintext JSON, while
+// the X-Transport-* headers prove possession of the provisioned transport key.
+func (c *Client) OpenTransportSession(transportClientID string, transportKey []byte) (*TransportSessionResponse, error) {
 	reqBody, err := json.Marshal(map[string]string{"transportClientId": transportClientID})
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.http.Post(c.baseURL+"/api/v1/fs/transport-sessions", "application/json", bytes.NewReader(reqBody))
+	path := "/api/v1/fs/transport-sessions"
+	req, err := http.NewRequest(http.MethodPost, c.baseURL+path, bytes.NewReader(reqBody))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if err := signTransportSessionRequest(req, http.MethodPost, path, reqBody, transportClientID, transportKey); err != nil {
+		return nil, err
+	}
+	resp, err := c.http.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -109,9 +122,13 @@ func (c *Client) OpenTransportSession(transportClientID string) (*TransportSessi
 // DELETE /api/v1/fs/transport-sessions/{sessionId}. A 404 (session already
 // gone) is not treated as an error — the caller's intent (no active session
 // under this id) is already satisfied.
-func (c *Client) CloseTransportSession(transportSessionID string) error {
-	req, err := http.NewRequest(http.MethodDelete, c.baseURL+"/api/v1/fs/transport-sessions/"+transportSessionID, nil)
+func (c *Client) CloseTransportSession(transportSessionID string, transportClientID string, transportKey []byte) error {
+	path := "/api/v1/fs/transport-sessions/" + transportSessionID
+	req, err := http.NewRequest(http.MethodDelete, c.baseURL+path, nil)
 	if err != nil {
+		return err
+	}
+	if err := signTransportSessionRequest(req, http.MethodDelete, path, nil, transportClientID, transportKey); err != nil {
 		return err
 	}
 	resp, err := c.http.Do(req)
@@ -207,4 +224,34 @@ func describeError(statusCode int, body []byte) string {
 		return fmt.Sprintf("HTTP %d %s: %s", statusCode, e.ErrorCode, e.Message)
 	}
 	return fmt.Sprintf("HTTP %d: %s", statusCode, string(body))
+}
+
+func signTransportSessionRequest(req *http.Request, method, path string, body []byte, clientID string, key []byte) error {
+	nonce, err := randomNonce()
+	if err != nil {
+		return fmt.Errorf("ksclient: creating transport auth nonce: %w", err)
+	}
+	timestamp := fmt.Sprintf("%d", time.Now().UnixMilli())
+	bodyHash := sha256.Sum256(body)
+	canonical := strings.ToUpper(method) + "\n" +
+		path + "\n" +
+		base64.RawURLEncoding.EncodeToString(bodyHash[:]) + "\n" +
+		clientID + "\n" +
+		timestamp + "\n" +
+		nonce
+	mac := hmac.New(sha256.New, key)
+	_, _ = mac.Write([]byte(canonical))
+	req.Header.Set("X-Transport-Client-Id", clientID)
+	req.Header.Set("X-Transport-Timestamp", timestamp)
+	req.Header.Set("X-Transport-Nonce", nonce)
+	req.Header.Set("X-Transport-Signature", base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))
+	return nil
+}
+
+func randomNonce() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }

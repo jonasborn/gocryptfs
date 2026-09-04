@@ -29,10 +29,10 @@ func TestGoldenVectorTTEHappyPath(t *testing.T) {
 	key, _ := hex.DecodeString("101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f")
 	nonce, _ := hex.DecodeString("101112131415161718191a1b")
 	wantCiphertext, _ := hex.DecodeString("b01c3d20109c6ba12dd6322c80dd022b5910")
-	wantTag, _ := hex.DecodeString("272465c0a2f43c3fb5b2ce62cd7ddcd5")
+	wantTag, _ := hex.DecodeString("e834b037b385c6b4c0afdfd3425ec711")
 	wantPlaintext := []byte("TTE Secure Payload")
 
-	aad := buildTransportAAD(DomainTTE, ClientTypeTS, "ts-client-01", DirectionRequest, OpCreateSession, "msg-202", 5)
+	aad := buildTransportAAD(DomainTTE, ClientTypeTS, "ts-session-01", DirectionRequest, OpCreateSession, "msg-202", 5)
 
 	// Seal is expected to reproduce byte-identical ciphertext/tag given the
 	// same key/nonce/AAD/plaintext, since AES-GCM is deterministic for a
@@ -65,9 +65,9 @@ func TestGoldenVectorTTETamperedAAD(t *testing.T) {
 	ciphertext, _ := hex.DecodeString("b01c3d20109c6ba12dd6322c80dd022b5910")
 	tag, _ := hex.DecodeString("272465c0a2f43c3fb5b2ce62cd7ddcd5")
 
-	// Same as the happy-path AAD but with a different transport client id —
-	// mirrors GoldenVectors.java's TTE_TAMPERED_AAD_01 ("ts-client-TAMPERED").
-	tamperedAAD := buildTransportAAD(DomainTTE, ClientTypeTS, "ts-client-TAMPERED", DirectionRequest, OpCreateSession, "msg-202", 5)
+	// Same as the happy-path AAD but with a different transport session id —
+	// mirrors GoldenVectors.java's TTE_TAMPERED_AAD_01 ("ts-session-TAMPERED").
+	tamperedAAD := buildTransportAAD(DomainTTE, ClientTypeTS, "ts-session-TAMPERED", DirectionRequest, OpCreateSession, "msg-202", 5)
 
 	if _, err := openTransportEnvelope(key, tamperedAAD, nonce, ciphertext, tag); err == nil {
 		t.Fatal("expected authentication failure with tampered AAD, got nil error")

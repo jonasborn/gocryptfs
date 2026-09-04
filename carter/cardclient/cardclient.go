@@ -72,21 +72,18 @@ func New(ks *ksclient.Client, transportClientID string, transportKey []byte,
 // session is fabricated: the challenge and cardSessionId come from the live
 // card, exactly as for the KS's own admin/host sessions.
 //
-// Opening the transport session first matters for more than bookkeeping: the
-// KS resets this transport client's replay-sequence watermark when a new
-// transport session opens (see FSServices/TSRoutes' resetClientSequence
-// call), which is what lets a freshly (re)started process — whose own
-// sequence counter necessarily restarts at 1 — succeed again. Skipping this
-// call still lets individual card-relay requests authenticate (the relay
-// route itself doesn't require an active registered session), but every
-// process run after the first in the KS's uptime would then be rejected as a
-// sequence regression.
+// Opening the transport session first is required because TTE replay state is
+// scoped to the returned transportSessionId. A fresh process can start its
+// sequence at 1 without lowering any previous session's replay watermark.
 func (c *Client) EstablishSession() (*proto.CardSession, error) {
-	sess, err := c.ks.OpenTransportSession(c.transportClientID)
+	sess, err := c.ks.OpenTransportSession(c.transportClientID, c.transportKey)
 	if err != nil {
 		return nil, fmt.Errorf("cardclient: opening transport session: %w", err)
 	}
 	c.transportSessionID = sess.TransportSessionID
+	if err := c.envelope.SetTransportSessionID(sess.TransportSessionID); err != nil {
+		return nil, fmt.Errorf("cardclient: binding transport session: %w", err)
+	}
 
 	challengeAPDU, err := proto.BuildAuthChallengeAPDU(c.cardClientID)
 	if err != nil {
@@ -114,7 +111,7 @@ func (c *Client) Close() error {
 	if c.transportSessionID == "" {
 		return nil
 	}
-	err := c.ks.CloseTransportSession(c.transportSessionID)
+	err := c.ks.CloseTransportSession(c.transportSessionID, c.transportClientID, c.transportKey)
 	c.transportSessionID = ""
 	return err
 }

@@ -72,8 +72,9 @@ const (
 // (UTE/TTE) — see transport/TransportEnvelopeMessage.java. Field names and
 // casing must match exactly; the server decodes this with the same DTO.
 type TransportEnvelopeMessage struct {
-	TransportClientID string `json:"transportClientId"`
-	ClientType        string `json:"clientType"`
+	TransportClientID  string `json:"transportClientId"`
+	TransportSessionID string `json:"transportSessionId,omitempty"`
+	ClientType         string `json:"clientType"`
 	// Direction here is the literal uppercase "REQUEST"/"RESPONSE" — a
 	// separate, informational-only field from the lowercase AAD direction
 	// identifier used inside buildTransportAAD.
@@ -145,13 +146,15 @@ func openTransportEnvelope(key []byte, aad []byte, nonce, ciphertext, tag []byte
 
 // TransportEnvelopeClient is the FS/TS side of the Transport Envelope: seals
 // outbound REQUESTs under the shared transport key and opens the KS's sealed
-// RESPONSEs, mirroring transport/TransportEnvelopeClient.java. Sequence
-// numbers are strictly increasing per instance, starting at 1.
+// RESPONSEs, mirroring transport/TransportEnvelopeClient.java. TTE sequence
+// numbers are strictly increasing per transport session; UTE sequence numbers
+// are strictly increasing per client.
 type TransportEnvelopeClient struct {
-	clientID   string
-	clientType ClientType
-	domain     EnvelopeDomain
-	sequence   int64
+	clientID           string
+	transportSessionID string
+	clientType         ClientType
+	domain             EnvelopeDomain
+	sequence           int64
 }
 
 // NewTransportEnvelopeClient constructs a client for one transport identity.
@@ -161,17 +164,35 @@ func NewTransportEnvelopeClient(clientID string, clientType ClientType, domain E
 	return &TransportEnvelopeClient{clientID: clientID, clientType: clientType, domain: domain}
 }
 
+// SetTransportSessionID binds subsequent TTE messages to a freshly opened
+// transport session and resets the per-session sequence counter.
+func (c *TransportEnvelopeClient) SetTransportSessionID(transportSessionID string) error {
+	if c.domain != DomainTTE {
+		return fmt.Errorf("proto: only TTE clients have a transport session id")
+	}
+	if strings.TrimSpace(transportSessionID) == "" {
+		return fmt.Errorf("proto: transport session id is required")
+	}
+	c.transportSessionID = transportSessionID
+	atomic.StoreInt64(&c.sequence, 0)
+	return nil
+}
+
 // Seal encrypts payload (JSON-marshaled by the caller) as a REQUEST under
 // transportKey for the given operation.
 func (c *TransportEnvelopeClient) Seal(transportKey []byte, op TransportOperation, payload []byte) (*TransportEnvelopeMessage, error) {
+	aadID, err := c.aadBindingID()
+	if err != nil {
+		return nil, err
+	}
 	seq := atomic.AddInt64(&c.sequence, 1)
 	messageID := newUUID()
-	aad := buildTransportAAD(c.domain, c.clientType, c.clientID, DirectionRequest, op, messageID, seq)
+	aad := buildTransportAAD(c.domain, c.clientType, aadID, DirectionRequest, op, messageID, seq)
 	nonce, ciphertext, tag, err := sealTransportEnvelope(transportKey, aad, payload)
 	if err != nil {
 		return nil, fmt.Errorf("proto: sealing transport envelope: %w", err)
 	}
-	return &TransportEnvelopeMessage{
+	out := &TransportEnvelopeMessage{
 		TransportClientID: c.clientID,
 		ClientType:        string(c.clientType),
 		Direction:         "REQUEST",
@@ -180,7 +201,11 @@ func (c *TransportEnvelopeClient) Seal(transportKey []byte, op TransportOperatio
 		Nonce:             b64enc(nonce),
 		Ciphertext:        b64enc(ciphertext),
 		AuthTag:           b64enc(tag),
-	}, nil
+	}
+	if c.domain == DomainTTE {
+		out.TransportSessionID = aadID
+	}
+	return out, nil
 }
 
 // OpenResponse decrypts the KS's sealed RESPONSE to a prior request built by
@@ -188,7 +213,11 @@ func (c *TransportEnvelopeClient) Seal(transportKey []byte, op TransportOperatio
 // (RESPONSE direction) so a forged or mismatched response will not open.
 func (c *TransportEnvelopeClient) OpenResponse(transportKey []byte, op TransportOperation,
 	request *TransportEnvelopeMessage, response *TransportEnvelopeMessage) ([]byte, error) {
-	aad := buildTransportAAD(c.domain, c.clientType, c.clientID, DirectionResponse, op, request.MessageID, request.Sequence)
+	aadID, err := c.responseAadBindingID(request)
+	if err != nil {
+		return nil, err
+	}
+	aad := buildTransportAAD(c.domain, c.clientType, aadID, DirectionResponse, op, request.MessageID, request.Sequence)
 	nonce, err := b64dec(response.Nonce)
 	if err != nil {
 		return nil, fmt.Errorf("proto: decoding response nonce: %w", err)
@@ -206,4 +235,24 @@ func (c *TransportEnvelopeClient) OpenResponse(transportKey []byte, op Transport
 		return nil, fmt.Errorf("proto: opening transport envelope response: %w", err)
 	}
 	return plaintext, nil
+}
+
+func (c *TransportEnvelopeClient) aadBindingID() (string, error) {
+	if c.domain != DomainTTE {
+		return c.clientID, nil
+	}
+	if strings.TrimSpace(c.transportSessionID) == "" {
+		return "", fmt.Errorf("proto: transport session id must be set before sealing TTE messages")
+	}
+	return c.transportSessionID, nil
+}
+
+func (c *TransportEnvelopeClient) responseAadBindingID(request *TransportEnvelopeMessage) (string, error) {
+	if c.domain != DomainTTE {
+		return c.clientID, nil
+	}
+	if request == nil || strings.TrimSpace(request.TransportSessionID) == "" {
+		return "", fmt.Errorf("proto: TTE response cannot be opened without the request transport session id")
+	}
+	return request.TransportSessionID, nil
 }
